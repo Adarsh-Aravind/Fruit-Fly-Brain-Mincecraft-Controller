@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Fly Brain</title>
+<style>
+  :root { --bg: #07080a; --panel: rgba(16, 18, 22, .86); --ink: #e8e6e1; --muted: #8d8b85; --line: #2a2c30; --accent: #ffb454; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 13px/1.45 ui-sans-serif, system-ui, "Segoe UI", sans-serif; overflow: hidden; }
+  canvas { display: block; }
+  #panel.reward { border-color: #ffd166; box-shadow: 0 0 24px rgba(255, 209, 102, .45); }
+  #panel { transition: border-color .3s, box-shadow .3s; position: absolute; top: 12px; left: 12px; width: 300px; max-height: calc(100% - 24px); overflow: auto;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; backdrop-filter: blur(6px); }
+  h1 { font-size: 15px; margin: 0 0 2px; font-weight: 600; }
+  .sub { color: var(--muted); margin-bottom: 10px; }
+  h2 { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); margin: 14px 0 6px; font-weight: 600; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .stat { background: rgba(255,255,255,.04); border-radius: 6px; padding: 6px 8px; }
+  .stat b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; font-weight: 600; }
+  .stat span { color: var(--muted); font-size: 11px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 4px; }
+  button, select { font: inherit; color: var(--ink); background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; cursor: pointer; }
+  button.on { background: var(--accent); color: #111; border-color: var(--accent); }
+  select { width: 100%; }
+  .legend div { display: grid; grid-template-columns: 12px 1fr auto; gap: 8px; align-items: center; margin: 2px 0; font-variant-numeric: tabular-nums; }
+  .sw { width: 10px; height: 10px; border-radius: 50%; }
+  .num { color: var(--muted); }
+  .hint { color: var(--muted); font-size: 11px; margin-top: 10px; }
+  #toggle { display: none; position: absolute; top: 12px; left: 12px; }
+  @media (max-width: 640px) {
+    #panel { width: calc(100% - 24px); max-height: 55%; }
+    #panel.hidden { display: none; }
+    #toggle { display: block; }
+    #panel:not(.hidden) + #toggle { top: auto; bottom: 12px; }
+  }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="panel">
+  <h1>Live Fly Brain</h1>
+  <div class="sub" id="sub">loading connectome…</div>
+  <div class="stats">
+    <div class="stat"><b id="sActive">–</b><span>neurons firing</span></div>
+    <div class="stat"><b id="sEdges">–</b><span>connections carrying spikes</span></div>
+    <div class="stat"><b id="sFps">–</b><span>brain updates / s</span></div>
+    <div class="stat"><b id="sAct">–</b><span>action</span></div>
+    <div class="stat" style="grid-column: span 2"><span>dopamine: reward (PAM) · punishment (PPL1)</span>
+      <div style="display:flex;gap:6px;margin-top:4px">
+        <div style="flex:1;height:8px;background:rgba(255,255,255,.08);border-radius:4px;overflow:hidden"><div id="dPam" style="height:100%;width:0;background:#ffd166;transition:width .25s"></div></div>
+        <div style="flex:1;height:8px;background:rgba(255,255,255,.08);border-radius:4px;overflow:hidden"><div id="dPpl" style="height:100%;width:0;background:#4d8dff;transition:width .25s"></div></div>
+      </div></div>
+  </div>
+  <h2>View</h2>
+  <div class="btns">
+    <button id="vNet">3D network</button>
+    <button id="vImg">brain imaging</button>
+  </div>
+  <h2>Which fly</h2>
+  <div class="btns" id="bodies"></div>
+  <h2>Show</h2>
+  <div class="btns">
+    <button id="bEdges" class="on">connections</button>
+    <button id="bCord" class="on">nerve cord</button>
+    <button id="bRotate" class="on">auto-rotate</button>
+    <button id="bDim">hide idle</button>
+  </div>
+  <h2>Highlight a circuit</h2>
+  <select id="group"><option value="">none</option></select>
+  <h2>Cell classes (firing now)</h2>
+  <div class="legend" id="legend"></div>
+  <div class="hint">Every dot is one of the 165,122 simulated neurons at its real position in the fly's central nervous system (brain on top, nerve cord below). Dots flash when they spike. Lines are synapses where both neurons just fired: warm = excitatory, blue = inhibitory. Drag to orbit, scroll to zoom. <a href="/">Dashboard</a></div>
+</div>
+<button id="toggle">panel</button>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from 'three'
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+
+const PALETTE = {
+  sensory: '#4cc9f0', visual: '#b388ff', central: '#f4d35e', optic_lobe: '#8d99ae',
+  vnc: '#90be6d', ascending: '#43aa8b', descending: '#ff6b6b', motor: '#ff9f1c', other: '#6c757d'
+}
+const LABELS = {
+  sensory: 'sensory', visual: 'visual projection', central: 'central brain', optic_lobe: 'optic lobe',
+  vnc: 'nerve cord', ascending: 'ascending', descending: 'descending (commands)', motor: 'motor', other: 'other'
+}
+const $ = id => document.getElementById(id)
+
+const meta = await (await fetch('/brain/meta')).json()
+const buf = await (await fetch('/brain/positions')).arrayBuffer()
+const N = meta.n
+const pos = new Float32Array(buf, 0, N * 3)
+const cls = new Uint8Array(buf, N * 3 * 4, N)
+const subText = `${N.toLocaleString()} neurons · ${meta.edges.toLocaleString()} synaptic connections · MaleCNS v1.0`
+$('sub').textContent = subText
+
+const renderer = new THREE.WebGLRenderer({ antialias: true })
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
+renderer.setSize(innerWidth, innerHeight)
+document.body.prepend(renderer.domElement)
+const scene = new THREE.Scene()
+scene.background = new THREE.Color('#07080a')
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.01, 50)
+camera.position.set(0, 0.1, 2.4)
+const controls = new OrbitControls(camera, renderer.domElement)
+controls.enableDamping = true
+controls.autoRotate = true
+controls.autoRotateSpeed = 0.6
+
+// ---- neurons
+const act = new Float32Array(N)
+const hl = new Float32Array(N)
+const colors = new Float32Array(N * 3)
+for (let i = 0; i < N; i++) {
+  const col = new THREE.Color(PALETTE[meta.classes[cls[i]]])
+  colors.set([col.r, col.g, col.b], i * 3)
+}
+const geo = new THREE.BufferGeometry()
+geo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+geo.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+const actAttr = new THREE.BufferAttribute(act, 1); actAttr.setUsage(THREE.DynamicDrawUsage)
+const hlAttr = new THREE.BufferAttribute(hl, 1); hlAttr.setUsage(THREE.DynamicDrawUsage)
+geo.setAttribute('act', actAttr)
+geo.setAttribute('hl', hlAttr)
+const cordFlag = new Float32Array(N)
+for (const i of meta.cord) cordFlag[i] = 1
+geo.setAttribute('cord', new THREE.BufferAttribute(cordFlag, 1))
+const uniforms = {
+  uIdle: { value: 0.07 }, uScale: { value: renderer.getPixelRatio() * innerHeight / 900 },
+  uHideCord: { value: 0 }, uImaging: { value: 0 }
+}
+const mat = new THREE.ShaderMaterial({
+  uniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  vertexShader: `
+    attribute float act; attribute float hl; attribute float cord; varying vec3 vCol; varying float vA;
+    uniform float uIdle; uniform float uScale; uniform float uHideCord; uniform float uImaging;
+    void main() {
+      if (uHideCord * cord > 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); gl_PointSize = 0.0; return; }
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_Position = projectionMatrix * mv;
+      float a = max(act, hl * 0.55);
+      float size = mix(1.4 + 4.5 * a, 1.3 + 1.3 * a, uImaging);
+      gl_PointSize = uScale * size * (2.6 / -mv.z);
+      vCol = mix(color, vec3(1.0), act * mix(0.35, 0.15, uImaging));
+      vA = uIdle + (mix(0.55, 0.7, uImaging) - uIdle) * a;
+    }`,
+  fragmentShader: `
+    varying vec3 vCol; varying float vA; uniform float uImaging;
+    void main() {
+      vec2 d = gl_PointCoord - 0.5; float r = dot(d, d);
+      if (r > 0.25) discard;
+      gl_FragColor = vec4(vCol * mix(1.0, 0.8, uImaging), vA * smoothstep(0.25, 0.0, r));
+    }`,
+  vertexColors: true
+})
+scene.add(new THREE.Points(geo, mat))
+
+// ---- active connections
+const MAXE = 2500
+const lpos = new Float32Array(MAXE * 6)
+const lcol = new Float32Array(MAXE * 6)
+const lgeo = new THREE.BufferGeometry()
+lgeo.setAttribute('position', new THREE.BufferAttribute(lpos, 3).setUsage(THREE.DynamicDrawUsage))
+lgeo.setAttribute('color', new THREE.BufferAttribute(lcol, 3).setUsage(THREE.DynamicDrawUsage))
+lgeo.setDrawRange(0, 0)
+const lmat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false })
+const lines = new THREE.LineSegments(lgeo, lmat)
+scene.add(lines)
+const EXC = new THREE.Color('#ffb454'), INH = new THREE.Color('#4d8dff')
+
+// ---- UI
+let body = 0
+for (let b = 0; b < meta.bodies; b++) {
+  const btn = document.createElement('button')
+  btn.textContent = `Fly${b}`; btn.className = b === 0 ? 'on' : ''
+  btn.onclick = () => { body = b; [...$('bodies').children].forEach((x, i) => x.classList.toggle('on', i === b)); act.fill(0) }
+  $('bodies').append(btn)
+}
+const tog = (id, fn) => $(id).onclick = () => fn($(id).classList.toggle('on'))
+tog('bEdges', on => { lines.visible = on })
+tog('bRotate', on => { controls.autoRotate = on })
+tog('bDim', on => { uniforms.uIdle.value = on ? 0.0 : (uniforms.uImaging.value ? 0.035 : 0.07) })
+$('toggle').onclick = () => $('panel').classList.toggle('hidden')
+const nice = k => k.replace('in:', 'sense · ').replace('out:', 'motor · ').replaceAll('_', ' ')
+for (const k of Object.keys(meta.groups)) {
+  const o = document.createElement('option'); o.value = k; o.textContent = `${nice(k)} (${meta.groups[k].length})`
+  $('group').append(o)
+}
+$('group').onchange = e => {
+  hl.fill(0)
+  for (const i of meta.groups[e.target.value] ?? []) hl[i] = 1
+  hlAttr.needsUpdate = true
+}
+const legendRows = meta.classes.map((c, i) => {
+  const d = document.createElement('div')
+  d.innerHTML = `<span class="sw" style="background:${PALETTE[c]}"></span><span>${LABELS[c]}</span><span class="num">0 / ${meta.class_counts[i].toLocaleString()}</span>`
+  $('legend').append(d)
+  return d.querySelector('.num')
+})
+
+// ---- view modes
+const IMAGING = {  // calcium-imaging look: optic lobes cyan, central brain magenta
+  sensory: '#c45bd6', visual: '#35c6e0', central: '#e8487f', optic_lobe: '#35c6e0',
+  vnc: '#e8487f', ascending: '#e8487f', descending: '#ff5f6d', motor: '#ff8a5c', other: '#e8487f'
+}
+function paint (palette) {
+  for (let i = 0; i < N; i++) {
+    const col = new THREE.Color(palette[meta.classes[cls[i]]])
+    colors.set([col.r, col.g, col.b], i * 3)
+  }
+  geo.attributes.color.needsUpdate = true
+  document.querySelectorAll('#legend .sw').forEach((el, i) => { el.style.background = palette[meta.classes[i]] })
+}
+const brainYs = []
+for (let i = 0; i < N; i++) if (!cordFlag[i]) brainYs.push(pos[3 * i + 1])
+brainYs.sort((x, y) => x - y)
+const brainMid = brainYs[Math.floor(brainYs.length / 2)]
+let decay = 0.35
+function setCord (show) {
+  $('bCord').classList.toggle('on', show)
+  uniforms.uHideCord.value = show ? 0 : 1
+}
+function setView (mode) {
+  const img = mode === 'imaging'
+  $('vNet').classList.toggle('on', !img); $('vImg').classList.toggle('on', img)
+  uniforms.uImaging.value = img ? 1 : 0
+  uniforms.uIdle.value = img ? 0.035 : 0.07
+  $('bDim').classList.remove('on')
+  paint(img ? IMAGING : PALETTE)
+  lines.visible = !img; $('bEdges').classList.toggle('on', !img)
+  controls.autoRotate = !img; $('bRotate').classList.toggle('on', !img)
+  setCord(!img)
+  decay = img ? 0.9 : 0.35  // imaging: slower fade, like a calcium indicator
+  if (img) { camera.position.set(0, brainMid, 1.55); controls.target.set(0, brainMid, 0) }
+  else { camera.position.set(0, 0.1, 2.4); controls.target.set(0, 0, 0) }
+  controls.update()
+  try { localStorage.setItem('flybrain.view', mode) } catch (e) {}
+}
+$('vNet').onclick = () => setView('network')
+$('vImg').onclick = () => setView('imaging')
+$('bCord').onclick = () => setCord(!$('bCord').classList.contains('on'))
+let startView = new URLSearchParams(location.search).get('view')
+if (!startView) { try { startView = localStorage.getItem('flybrain.view') } catch (e) {} }
+setView(startView === 'imaging' ? 'imaging' : 'network')
+
+// ---- live activity
+let updates = 0, lastRate = performance.now()
+async function poll () {
+  try {
+    const ab = await (await fetch(`/brain/activity?body=${body}`)).arrayBuffer()
+    const [ns, ne] = new Uint32Array(ab, 0, 2)
+    const off = 8
+    const idx = new Uint32Array(ab, off, ns)
+    const pairs = new Uint32Array(ab, off + ns * 4, ne * 2)
+    const nspk = new Uint8Array(ab, off + ns * 4 + ne * 8, ns)
+    const signs = new Uint8Array(ab, off + ns * 4 + ne * 8 + ns, ne)
+    const perClass = new Array(meta.classes.length).fill(0)
+    for (let k = 0; k < ns; k++) {
+      const i = idx[k]
+      act[i] = Math.max(act[i], Math.min(1, 0.35 + nspk[k] / 10))
+      perClass[cls[i]]++
+    }
+    for (let k = 0; k < ne; k++) {
+      const a = pairs[2 * k], b = pairs[2 * k + 1]
+      lpos.set([pos[3 * a], pos[3 * a + 1], pos[3 * a + 2], pos[3 * b], pos[3 * b + 1], pos[3 * b + 2]], k * 6)
+      const c = signs[k] ? EXC : INH
+      lcol.set([c.r * 0.35, c.g * 0.35, c.b * 0.35, c.r, c.g, c.b], k * 6)
+    }
+    lgeo.setDrawRange(0, ne * 2)
+    lgeo.attributes.position.needsUpdate = true
+    lgeo.attributes.color.needsUpdate = true
+    $('sActive').textContent = ns.toLocaleString()
+    $('sEdges').textContent = ne >= MAXE ? `${MAXE}+` : ne.toLocaleString()
+    perClass.forEach((v, i) => { legendRows[i].textContent = `${v.toLocaleString()} / ${meta.class_counts[i].toLocaleString()}` })
+    updates++
+    $('sub').textContent = subText
+  } catch (e) { console.error(e); $('sub').textContent = 'brain offline, retrying…' }
+  setTimeout(poll, 110)
+}
+async function pollState () {
+  try {
+    const s = await (await fetch('/state')).json()
+    const a = s.bodies?.[body]?.action
+    const dopa = s.bodies?.[body]?.dopamine
+    if (dopa) {
+      $('dPam').style.width = `${100 * dopa[0]}%`; $('dPpl').style.width = `${100 * dopa[1]}%`
+      $('panel').classList.toggle('reward', dopa[0] > 0.6)
+    }
+    if (a) $('sAct').textContent = [['stop', 'walk', 'back'][a.move], a.turn ? `turn ${a.turn}°` : '', a.jump ? 'jump' : '', a.attack ? 'bite' : ''].filter(Boolean).join(' · ')
+  } catch (e) {}
+  setTimeout(pollState, 300)
+}
+poll(); pollState()
+
+let last = performance.now()
+function frame (now) {
+  const dt = (now - last) / 1000; last = now
+  const k = Math.exp(-dt / decay)
+  for (let i = 0; i < N; i++) if (act[i] > 0.002) act[i] *= k; else act[i] = 0
+  actAttr.needsUpdate = true
+  lmat.opacity = 0.22 + 0.12 * Math.sin(now / 180)
+  if (now - lastRate > 1000) { $('sFps').textContent = (updates * 1000 / (now - lastRate)).toFixed(1); updates = 0; lastRate = now }
+  controls.update()
+  renderer.render(scene, camera)
+  requestAnimationFrame(frame)
+}
+requestAnimationFrame(frame)
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix()
+  renderer.setSize(innerWidth, innerHeight)
+  uniforms.uScale.value = renderer.getPixelRatio() * innerHeight / 900
+})
+</script>
+</body>
+</html>

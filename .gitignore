@@ -1,0 +1,13 @@
+# environments and downloads (recreated by scripts/setup.ps1)
+.venv/
+bot/node_modules/
+data/
+tools/
+# training output
+runs/
+# Minecraft server: only the config is versioned. eula.txt is personal (you accept the EULA yourself).
+server/*
+!server/server.properties
+.vs/
+__pycache__/
+*.pyc
